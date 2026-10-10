@@ -30,7 +30,7 @@ import time
 import httpx
 from flask import Flask, Response, abort, jsonify
 from pathlib import Path
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -227,6 +227,43 @@ STAT_LABELS = ["Avatar", "Username", "Real word", "Clean", "Collectible", "Rarit
                "Premium"]
 
 
+VIPS = {"sowco", "sillybucko"}      # these @usernames always win, every line says the same thing
+VIP_TEXT = "soso is the coolest"
+
+
+def avatar_score(pic):
+    """Scans a profile photo and returns a 'cool + professional' score 0-10 (None = no photo).
+    It is a heuristic built from image stats: contrast, sharpness, balanced colour,
+    moody brightness and a clearly focused subject in the centre."""
+    if pic is None:
+        return None
+    try:
+        im = pic.convert("RGB").resize((128, 128), Image.LANCZOS)
+        gray = ImageOps.grayscale(im)
+        edges = gray.filter(ImageFilter.FIND_EDGES)
+        edge_all = ImageStat.Stat(edges).mean[0]
+        center = ImageStat.Stat(edges.crop((32, 32, 96, 96))).mean[0]
+        gstat = ImageStat.Stat(gray)
+        bright = gstat.mean[0] / 255
+        sat = ImageStat.Stat(im.convert("HSV")).mean[1] / 255
+        contrast_n = min(1.0, gstat.stddev[0] / 60)
+        sharp_n = min(1.0, edge_all / 25) if edge_all <= 40 else max(0.2, 1 - (edge_all - 40) / 40)  # too busy = not clean
+        sat_n = max(0.0, 1 - abs(sat - 0.45) / 0.45)
+        mood_n = max(0.0, 1 - abs(bright - 0.4) / 0.6)
+        focus_n = min(1.0, (center / max(edge_all, 1.0)) / 1.6)
+        s = 0.28 * contrast_n + 0.25 * sharp_n + 0.15 * sat_n + 0.12 * mood_n + 0.20 * focus_n
+        return round(max(1.0, min(10.0, s * 10)), 1)
+    except Exception:
+        log.exception("avatar scan failed")
+        return 5.0
+
+
+def avatar_label(score):
+    if score is None:
+        return "None"
+    return "Elite" if score >= 8 else "Cool" if score >= 6 else "Decent" if score >= 4 else "Plain"
+
+
 def account_age(uid):
     """Rough join year from the Telegram user id (lower id = older account)."""
     for lim, year, score in ((1e8, "2015-", 10), (5e8, "~2017", 9), (1e9, "~2019", 8), (2e9, "~2020", 7),
@@ -236,11 +273,11 @@ def account_age(uid):
     return "2025+", 2
 
 
-def stat_facts(uid, name, frag, is_word, premium, has_pic, rating, tier):
+def stat_facts(uid, name, frag, is_word, premium, pic_score, rating, tier):
     """List of (value text, score 0-10) in the same order as STAT_LABELS."""
     age = account_age(uid)
     prem = ("Yes" if premium else "No", 6 if premium else 2)
-    ava = ("Yes" if has_pic else "None", 7 if has_pic else 2)
+    ava = (avatar_label(pic_score), pic_score if pic_score is not None else 2.0)
     if not name:
         return [ava, ("-", 0), ("-", 0), ("-", 0), ("-", 0), ("NONE", 0), age, prem]
     n = len(name)
@@ -552,8 +589,9 @@ def fighter(img, x0, x1, side, p, winner):
     chip(d, cx, 436, p["tier"], p["tier_color"] if winner else (206, 201, 192), 17, pad=30)
     d.text((cx, 507), f"{p['rating'] / 10:.2f}", font=font(84), fill=INK if winner else (98, 94, 88),
            anchor="mm")
-    d.text((cx, 559), p["cost"], font=font(fit_size(p["cost"], mw, 20)),
-           fill=(120, 72, 6) if winner else MUTED, anchor="mm")
+    if p["cost"]:
+        d.text((cx, 559), p["cost"], font=font(fit_size(p["cost"], mw, 20)),
+               fill=(120, 72, 6) if winner else MUTED, anchor="mm")
     d.text((cx, 585), record_line(p["id"]), font=font(15), fill=MUTED, anchor="mm")
 
 
@@ -565,8 +603,13 @@ def stats_table(img, a, b):
     h = top_pad + head_h + n * rh + 12
     sticker(d, (x0, TAB_Y, x1, TAB_Y + h), 30, PAPER, sh=8)
     pairs = list(zip(a["facts"], b["facts"]))
-    wins_a = sum(1 for x, y in pairs if x[1] > y[1])
-    wins_b = sum(1 for x, y in pairs if y[1] > x[1])
+    def judge(sa, sb):
+        if a.get("vip") != b.get("vip"):          # VIP wins every row
+            return bool(a.get("vip")), bool(b.get("vip")), False
+        return sa > sb, sb > sa, sa == sb
+
+    wins_a = sum(1 for x, y in pairs if judge(x[1], y[1])[0])
+    wins_b = sum(1 for x, y in pairs if judge(x[1], y[1])[1])
     hy = TAB_Y + top_pad + head_h // 2
     chip(d, x0 + 96, hy, f"{wins_a} WON", SIDE_A, 18)
     chip(d, x1 - 96, hy, f"{wins_b} WON", SIDE_B, 18)
@@ -578,7 +621,7 @@ def stats_table(img, a, b):
         ty = rows_y + i * rh
         ly, by = ty + 13, ty + 30
         (va, sa), (vb, sb) = pairs[i]
-        a_better, b_better, tie = sa > sb, sb > sa, sa == sb
+        a_better, b_better, tie = judge(sa, sb)
         if i:
             for x in range(x0 + 26, x1 - 26, 14):
                 d.line((x, ty - 1, x + 7, ty - 1), fill=(210, 203, 188), width=2)
@@ -879,6 +922,9 @@ async def build_profile(bot, user, fresh=False):
     else:
         pic, frag, word = await fetch_pfp(bot, user.id), None, False
     rating = rate_username(uname, frag, word)
+    pic_score = avatar_score(pic)
+    if uname and pic_score:
+        rating = round(min(100.0, rating + pic_score), 1)   # avatar adds up to +1.0 on the 10-point scale
     tier, tcol = tier_of(rating) if uname else ("NO @", GREY)
     cost, sub = cost_lines(uname, frag, word)
     premium = bool(getattr(user, "is_premium", False))
@@ -893,8 +939,13 @@ async def build_profile(bot, user, fresh=False):
         "sub": sub,
         "ton": (frag or {}).get("ton") or 0,
         "pfp": pic,
-        "facts": stat_facts(user.id, uname, frag, word, premium, pic is not None, rating, tier),
+        "facts": stat_facts(user.id, uname, frag, word, premium, pic_score, rating, tier),
+        "vip": False,
     }
+    if uname.lower() in VIPS:   # always wins, blank status, every line says the same thing
+        prof.update({"vip": True, "rating": 100.0, "tier": "GOD TIER @", "tier_color": GOLD,
+                     "cost": "", "sub": "", "ton": 10 ** 9,
+                     "facts": [(VIP_TEXT, 10.0)] * len(STAT_LABELS)})
     PROFILES[user.id] = (time.time() + 600, prof)
     if len(PROFILES) > 500:
         PROFILES.clear()
@@ -902,6 +953,9 @@ async def build_profile(bot, user, fresh=False):
 
 
 def decide_winner(a, b):
+    av, bv = bool(a.get("vip")), bool(b.get("vip"))
+    if av != bv:
+        return av
     if a["rating"] != b["rating"]:
         return a["rating"] > b["rating"]
     if a["ton"] != b["ton"]:
