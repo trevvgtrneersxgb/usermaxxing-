@@ -269,7 +269,7 @@ def stat_facts(uid, name, frag, is_word, premium, has_pic, rating, tier):
 # IMAGES (simple + fast)
 # ======================================================================
 W, H = 960, 540          # banner + leaderboard
-BW, BH = 900, 1240       # battle card (portrait, like a profile battle)
+BW, BH = 900, 1390       # battle card (portrait, like a profile battle)
 GOLD = (255, 200, 40)
 CYAN = (0, 210, 255)
 PINK = (255, 60, 180)
@@ -414,14 +414,72 @@ def circle_paste(img, cx, cy, r, source):
     img.paste(source, (cx - r, cy - r), mask)
 
 
+# ---------- cream "sticker" theme (matches the mascot art) ----------
+INK = (28, 26, 24)
+CREAM = (248, 242, 230)
+PAPER = (255, 253, 247)
+MUTED = (122, 114, 102)
+SIDE_A = (96, 186, 255)
+SIDE_B = (255, 122, 168)
+WIN_YELLOW = (255, 224, 110)
+LOSE_GREY = (234, 231, 238)
+TRACK2 = (236, 230, 216)
+BAR_GREY = (200, 195, 184)
+CARD_T, CARD_B = 125, 605
+RES_Y, TAB_Y = 630, 706
+
+
+def paper(w, h):
+    key = ("paper", w, h)
+    if key not in _BG:
+        base = Image.new("RGB", (w, h), CREAM)
+        noise = Image.effect_noise((w, h), 36).convert("RGB")
+        base = Image.blend(base, noise, 0.05)
+        blot = Image.effect_noise((max(2, w // 60), max(2, h // 60)), 40).resize((w, h), Image.BICUBIC)
+        base = Image.blend(base, blot.convert("RGB"), 0.05)
+        d = ImageDraw.Draw(base)
+        f = font(30)
+        for row, y in enumerate(range(24, h, 96)):
+            for x in range(-10 + (row % 2) * 60, w, 120):
+                d.text((x, y), "@", font=f, fill=(226, 219, 205))
+        _BG[key] = base
+    return _BG[key].copy()
+
+
+def fit_size(text, max_w, start, minimum=14):
+    size = start
+    while size > minimum:
+        if font(size).getlength(text) <= max_w:
+            return size
+        size -= 2
+    return minimum
+
+
+def sticker(d, box, r, fill, sh=6, width=4):
+    x0, y0, x1, y1 = box
+    if sh:
+        d.rounded_rectangle((x0 + sh, y0 + sh, x1 + sh, y1 + sh), r, fill=INK)
+    d.rounded_rectangle(box, r, fill=fill, outline=INK, width=width)
+
+
+def chip(d, cx, cy, text, fill, size=18, pad=34, color=INK, width=3):
+    f = font(size)
+    w, h = int(f.getlength(text)) + pad, size + 16
+    d.rounded_rectangle((cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2), h // 2, fill=fill,
+                        outline=INK, width=width)
+    d.text((cx, cy), text, font=f, fill=color, anchor="mm")
+
+
 def avatar(img, cx, cy, r, pic, letter, ring, gray=False, uid=0):
+    circle_paste(img, cx, cy, r + 10, INK)
     circle_paste(img, cx, cy, r + 6, ring)
+    circle_paste(img, cx, cy, r + 3, INK)
     if pic is not None:
         pic = ImageOps.fit(pic.convert("RGB"), (r * 2, r * 2))
     else:
         pic = default_pic(uid, letter, r)
     if gray:
-        pic = ImageOps.grayscale(pic).convert("RGB").point(lambda v: int(v * 0.6))
+        pic = ImageOps.grayscale(pic).convert("RGB").point(lambda v: int(v * 0.8 + 30))
     circle_paste(img, cx, cy, r, pic)
 
 
@@ -433,161 +491,166 @@ def pill(d, cx, cy, text, color, size=20):
     d.text((cx, cy), text, font=f, fill=lighten(color, 0.3), anchor="mm")
 
 
-def header(d, tag, w=W):
-    d.text((30, 38), "USERMAXXING", font=font(36), fill=GREEN, anchor="lm")
-    pill(d, w - 120, 38, tag, CYAN, 16)
-
-
 def stamp_mogged(img, cx, cy):
-    layer = Image.new("RGBA", (290, 76), (0, 0, 0, 0))
+    layer = Image.new("RGBA", (300, 86), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    d.rectangle((0, 7, 290, 69), fill=GREEN + (255,))
-    d.rectangle((0, 7, 290, 13), fill=(20, 20, 20, 255))
-    d.rectangle((0, 63, 290, 69), fill=(20, 20, 20, 255))
-    d.text((145, 38), "MOGGED!", font=font(42), fill=RED, anchor="mm", stroke_width=3,
-           stroke_fill=(0, 0, 0))
-    layer = layer.rotate(12, expand=True, resample=Image.BICUBIC)
+    d.rounded_rectangle((4, 6, 296, 80), 14, fill=(232, 60, 48, 255), outline=INK + (255,), width=5)
+    d.text((150, 43), "MOGGED!", font=font(44), fill=(255, 255, 255, 255), anchor="mm", stroke_width=2,
+           stroke_fill=INK)
+    layer = layer.rotate(10, expand=True, resample=Image.BICUBIC)
     img.paste(layer, (cx - layer.width // 2, cy - layer.height // 2), layer)
 
 
 def crown(d, cx, y):
-    w, h = 96, 44
-    pts = [(cx - w // 2, y + h), (cx - w // 2, y + 10), (cx - w // 4, y + 26), (cx, y),
-           (cx + w // 4, y + 26), (cx + w // 2, y + 10), (cx + w // 2, y + h)]
-    d.polygon(pts, fill=GOLD, outline=(160, 110, 0))
+    w, h = 104, 48
+    pts = [(cx - w // 2, y + h), (cx - w // 2, y + 10), (cx - w // 4, y + 28), (cx, y),
+           (cx + w // 4, y + 28), (cx + w // 2, y + 10), (cx + w // 2, y + h)]
+    d.polygon(pts, fill=GOLD)
+    d.line(pts + [pts[0]], fill=INK, width=4, joint="curve")
     for px, py in ((cx - w // 2, y + 10), (cx, y), (cx + w // 2, y + 10)):
-        d.ellipse((px - 5, py - 5, px + 5, py + 5), fill=(255, 235, 150), outline=(160, 110, 0))
+        d.ellipse((px - 7, py - 7, px + 7, py + 7), fill=(255, 244, 180), outline=INK, width=3)
 
 
-CARD_BG = (20, 20, 27)
-CARD_LINE = (50, 52, 64)
-TABLE_BG = (16, 16, 22)
-TRACK = (40, 42, 54)
-CARD_T, CARD_B = 115, 605
-RES_Y, TAB_Y = 625, 701
+def theme_header(img, w, tag):
+    d = ImageDraw.Draw(img)
+    head = mascot_head(66)
+    tx = 40
+    if head is not None:
+        img.paste(head, (36, 62 - head.height // 2), head)
+        tx = 36 + head.width + 12
+    d.text((tx, 64), "USERMAXXING", font=font(42), fill=INK, anchor="lm")
+    chip(d, w - 150, 62, tag, PAPER, 16)
 
 
 def record_line(uid):
     e = RECORDS.get("global", {}).get(str(uid))
     if not e:
-        return "0 battles"
-    return f"{e['w'] + e['l']} battles | {e['w']} wins"
+        return "no battles yet"
+    n = e["w"] + e["l"]
+    return f"{n} battle{'s' if n != 1 else ''}  |  {e['w']} win{'s' if e['w'] != 1 else ''}"
 
 
-def fighter(img, x0, x1, color, p, winner):
+def fighter(img, x0, x1, side, p, winner):
     d = ImageDraw.Draw(img)
-    ring = GOLD if winner else (78, 80, 94)
-    d.rounded_rectangle((x0, CARD_T, x1, CARD_B), 30, fill=(32, 26, 15) if winner else CARD_BG,
-                        outline=ring if winner else CARD_LINE, width=3 if winner else 2)
+    sticker(d, (x0, CARD_T, x1, CARD_B), 32, WIN_YELLOW if winner else LOSE_GREY, sh=8)
     cx = (x0 + x1) // 2
-    if winner:
-        glow(img, cx, 235, 82, GOLD, 0.5)
-    avatar(img, cx, 235, 72, p["pfp"], (p["name"][:1] or "?").upper(), ring, gray=not winner, uid=p["id"])
+    avatar(img, cx, 240, 70, p["pfp"], (p["name"][:1] or "?").upper(),
+           GOLD if winner else (190, 186, 196), gray=not winner, uid=p["id"])
     d = ImageDraw.Draw(img)
     if winner:
-        crown(d, cx, 126)
+        crown(d, cx, 106)
     else:
-        stamp_mogged(img, cx, 245)
+        stamp_mogged(img, cx, 252)
         d = ImageDraw.Draw(img)
-    mw = x1 - x0 - 36
+    mw = x1 - x0 - 44
     name = p["name"][:16]
-    d.text((cx, 345), name, font=fit_font(name, mw, 34), fill=WHITE if winner else (190, 190, 198),
+    d.text((cx, 346), name, font=font(fit_size(name, mw, 34)), fill=INK if winner else (92, 88, 82),
            anchor="mm")
     handle = f"@{p['username']}" if p["username"] else "no username"
-    d.text((cx, 383), handle, font=fit_font(handle, mw, 24), fill=GREY, anchor="mm")
-    pill(d, cx, 428, p["tier"], p["tier_color"] if winner else (120, 124, 140), 17)
-    d.text((cx, 500), f"{p['rating'] / 10:.2f}", font=font(78), fill=WHITE if winner else (150, 150, 158),
+    hs = fit_size(handle, mw - 40, 22)
+    chip(d, cx, 388, handle, side if p["username"] else (214, 210, 202), hs, pad=30)
+    chip(d, cx, 436, p["tier"], p["tier_color"] if winner else (206, 201, 192), 17, pad=30)
+    d.text((cx, 507), f"{p['rating'] / 10:.2f}", font=font(84), fill=INK if winner else (98, 94, 88),
            anchor="mm")
-    d.text((cx, 559), p["cost"], font=fit_font(p["cost"], mw, 20), fill=GOLD if winner else GREY,
-           anchor="mm")
-    d.text((cx, 585), record_line(p["id"]), font=font(15), fill=(100, 104, 118), anchor="mm")
+    d.text((cx, 559), p["cost"], font=font(fit_size(p["cost"], mw, 20)),
+           fill=(120, 72, 6) if winner else MUTED, anchor="mm")
+    d.text((cx, 585), record_line(p["id"]), font=font(15), fill=MUTED, anchor="mm")
 
 
 def stats_table(img, a, b):
     d = ImageDraw.Draw(img)
     x0, x1 = 40, 860
-    rh, n = 56, len(STAT_LABELS)
-    d.rounded_rectangle((x0, TAB_Y, x1, TAB_Y + 32 + n * rh), 30, fill=TABLE_BG, outline=CARD_LINE, width=2)
+    rh, n = 54, len(STAT_LABELS)
+    top_pad, head_h = 14, 46
+    h = top_pad + head_h + n * rh + 12
+    sticker(d, (x0, TAB_Y, x1, TAB_Y + h), 30, PAPER, sh=8)
+    pairs = list(zip(a["facts"], b["facts"]))
+    wins_a = sum(1 for x, y in pairs if x[1] > y[1])
+    wins_b = sum(1 for x, y in pairs if y[1] > x[1])
+    hy = TAB_Y + top_pad + head_h // 2
+    chip(d, x0 + 96, hy, f"{wins_a} WON", SIDE_A, 18)
+    chip(d, x1 - 96, hy, f"{wins_b} WON", SIDE_B, 18)
+    d.text((450, hy), "HEAD TO HEAD", font=font(18), fill=MUTED, anchor="mm")
     L0, L1, R0, R1 = 72, 372, 528, 828
     zw = L1 - L0
+    rows_y = TAB_Y + top_pad + head_h
     for i, label in enumerate(STAT_LABELS):
-        ty = TAB_Y + 16 + i * rh
-        ly, by = ty + 17, ty + 38
-        (va, sa), (vb, sb) = a["facts"][i], b["facts"][i]
-        a_better, b_better = sa > sb, sb > sa
-        tie = sa == sb
-        d.text((450, ty + 20), label, font=fit_font(label, 150, 16), fill=(125, 129, 146), anchor="mm")
-        # left side: value far left, score by the centre, bar grows outward from the centre
-        d.text((L0, ly), va, font=fit_font(va, 190, 18), fill=(235, 235, 240) if a_better else (130, 134, 148),
-               anchor="lm")
-        d.text((L1, ly), f"{sa:.1f}", font=font(18), fill=WHITE if a_better else (110, 114, 128), anchor="rm")
-        d.rounded_rectangle((L0, by, L1, by + 7), 3, fill=TRACK)
-        wa = max(7, int(zw * min(10, sa) / 10))
-        d.rounded_rectangle((L1 - wa, by, L1, by + 7), 3,
-                            fill=(CYAN if a_better else darken(CYAN, 0.6) if tie else (84, 88, 104)))
-        # right side
-        d.text((R1, ly), vb, font=fit_font(vb, 190, 18), fill=(235, 235, 240) if b_better else (130, 134, 148),
-               anchor="rm")
-        d.text((R0, ly), f"{sb:.1f}", font=font(18), fill=WHITE if b_better else (110, 114, 128), anchor="lm")
-        d.rounded_rectangle((R0, by, R1, by + 7), 3, fill=TRACK)
-        wb = max(7, int(zw * min(10, sb) / 10))
-        d.rounded_rectangle((R0, by, R0 + wb, by + 7), 3,
-                            fill=(PINK if b_better else darken(PINK, 0.6) if tie else (84, 88, 104)))
-        if i < n - 1:
-            d.line((x0 + 24, ty + rh - 2, x1 - 24, ty + rh - 2), fill=(44, 46, 58), width=1)
+        ty = rows_y + i * rh
+        ly, by = ty + 13, ty + 30
+        (va, sa), (vb, sb) = pairs[i]
+        a_better, b_better, tie = sa > sb, sb > sa, sa == sb
+        if i:
+            for x in range(x0 + 26, x1 - 26, 14):
+                d.line((x, ty - 1, x + 7, ty - 1), fill=(210, 203, 188), width=2)
+        chip(d, 450, ty + 26, label, (246, 240, 228), 15, pad=26, width=2)
+        # left player
+        d.text((L0, ly), va, font=font(fit_size(va, 190, 19)), fill=INK if a_better else MUTED, anchor="lm")
+        d.text((L1, ly), f"{sa:.1f}", font=font(19), fill=INK if a_better else MUTED, anchor="rm")
+        d.rounded_rectangle((L0, by, L1, by + 12), 6, fill=TRACK2, outline=INK, width=2)
+        wa = max(8, int((zw - 4) * min(10, sa) / 10))
+        d.rounded_rectangle((L1 - 2 - wa, by + 2, L1 - 2, by + 10), 4,
+                            fill=SIDE_A if a_better else lighten(SIDE_A, 0.45) if tie else BAR_GREY)
+        # right player
+        d.text((R1, ly), vb, font=font(fit_size(vb, 190, 19)), fill=INK if b_better else MUTED, anchor="rm")
+        d.text((R0, ly), f"{sb:.1f}", font=font(19), fill=INK if b_better else MUTED, anchor="lm")
+        d.rounded_rectangle((R0, by, R1, by + 12), 6, fill=TRACK2, outline=INK, width=2)
+        wb = max(8, int((zw - 4) * min(10, sb) / 10))
+        d.rounded_rectangle((R0 + 2, by + 2, R0 + 2 + wb, by + 10), 4,
+                            fill=SIDE_B if b_better else lighten(SIDE_B, 0.45) if tie else BAR_GREY)
 
 
 def make_battle_image(a, b, winner_is_a):
-    img = background(BW, BH, dark=True)
+    img = paper(BW, BH)
+    theme_header(img, BW, "USERNAME BATTLE")
+    fighter(img, 40, 436, SIDE_A, a, winner_is_a)
+    fighter(img, 464, 860, SIDE_B, b, not winner_is_a)
     d = ImageDraw.Draw(img)
-    head = mascot_head(64)
-    tx = 40
-    if head is not None:
-        img.paste(head, (36, 56 - head.height // 2), head)
-        tx = 36 + head.width + 10
-    d.text((tx, 58), "USERMAXXING", font=font(42), fill=WHITE, anchor="lm")
-    pill(d, BW - 135, 58, "USERNAME BATTLE", (130, 134, 150), 15)
-    fighter(img, 40, 438, CYAN, a, winner_is_a)
-    fighter(img, 462, 860, PINK, b, not winner_is_a)
-    d = ImageDraw.Draw(img)
-    d.ellipse((418, 203, 482, 267), fill=(10, 10, 14), outline=(90, 92, 106), width=2)
-    d.text((450, 235), "VS", font=font(26), fill=WHITE, anchor="mm")
+    d.ellipse((450 - 38, 240 - 38, 450 + 38, 240 + 38), fill=PAPER)
+    d.ellipse((450 - 33, 240 - 33, 450 + 33, 240 + 33), fill=INK)
+    d.text((450, 241), "VS", font=font(28), fill=WHITE, anchor="mm")
 
     win, lose = (a, b) if winner_is_a else (b, a)
     diff = abs(a["rating"] - b["rating"]) / 10
-    d.rounded_rectangle((40, RES_Y, 860, RES_Y + 56), 28, fill=TABLE_BG, outline=CARD_LINE, width=2)
+    d.rounded_rectangle((40 + 5, RES_Y + 5, 860 + 5, RES_Y + 60 + 5), 30, fill=(120, 112, 100))
+    d.rounded_rectangle((40, RES_Y, 860, RES_Y + 60), 30, fill=INK)
     line = f"{win['name'][:12]} MOGS {lose['name'][:12]}"
-    d.text((68, RES_Y + 28), line, font=fit_font(line, 600, 24), fill=WHITE, anchor="lm")
-    pill(d, 780, RES_Y + 28, f"+{diff:.2f}", GOLD, 18)
+    d.text((72, RES_Y + 31), line, font=font(fit_size(line, 600, 26)), fill=WHITE, anchor="lm")
+    chip(d, 772, RES_Y + 30, f"+{diff:.2f}", GOLD, 20)
 
     stats_table(img, a, b)
+    m = mascot()
+    if m is not None:
+        mw = 220
+        mm = m.resize((mw, int(m.height * mw / m.width)), Image.LANCZOS)
+        img.paste(mm, (40, BH - 162), mm)
     d = ImageDraw.Draw(img)
-    d.text((450, BH - 30), "tap Refresh profile to re-check your @ on Fragment", font=font(15),
-           fill=(86, 90, 104), anchor="mm")
+    d.text((310, BH - 98), "tap Refresh profile", font=font(26), fill=INK, anchor="lm")
+    d.text((310, BH - 64), "to re-check your @ on Fragment", font=font(18), fill=MUTED, anchor="lm")
     return jpeg(img)
 
 
 def make_leaderboard(rows):
-    img = background()
+    img = paper(W, H)
+    theme_header(img, W, "LEADERBOARD")
     d = ImageDraw.Draw(img)
-    header(d, "LEADERBOARD")
     if not rows:
-        d.text((W // 2, 260), "NO BATTLES YET", font=font(48), fill=WHITE, anchor="mm")
-        d.text((W // 2, 315), "challenge someone to start the board", font=font(22), fill=GREY, anchor="mm")
+        d.text((W // 2, 280), "NO BATTLES YET", font=font(48), fill=INK, anchor="mm")
+        d.text((W // 2, 335), "challenge someone to start the board", font=font(22), fill=MUTED, anchor="mm")
         return jpeg(img)
-    medals = [GOLD, (205, 210, 222), (205, 127, 50), (90, 100, 140), (90, 100, 140)]
+    medals = [GOLD, (205, 210, 222), (205, 127, 50), (214, 208, 196), (214, 208, 196)]
     for i, r in enumerate(rows[:5]):
-        cy = 120 + i * 78
+        cy = 150 + i * 82
         total = r["w"] + r["l"]
         wr = int(round(100 * r["w"] / total)) if total else 0
-        d.rounded_rectangle((40, cy - 32, W - 40, cy + 32), 16, fill=(14, 17, 36), outline=medals[i], width=2)
-        circle_paste(img, 85, cy, 22, medals[i])
+        sticker(d, (40, cy - 34, W - 40, cy + 34), 22, WIN_YELLOW if i == 0 else PAPER, sh=5, width=3)
+        circle_paste(img, 92, cy, 27, INK)
+        circle_paste(img, 92, cy, 23, medals[i])
         d = ImageDraw.Draw(img)
-        d.text((85, cy), str(i + 1), font=font(26), fill=(10, 10, 20), anchor="mm")
+        d.text((92, cy), str(i + 1), font=font(26), fill=INK, anchor="mm")
         nm = (r["name"] or "Player")[:16]
-        d.text((135, cy), nm, font=fit_font(nm, 450, 30), fill=WHITE, anchor="lm")
-        d.text((W - 190, cy), f"{r['w']}W - {r['l']}L", font=font(24), fill=GREY, anchor="rm")
-        d.text((W - 70, cy), f"{wr}%", font=font(32), fill=GOLD, anchor="rm")
+        d.text((140, cy), nm, font=font(fit_size(nm, 430, 30)), fill=INK, anchor="lm")
+        d.text((W - 220, cy), f"{r['w']}W - {r['l']}L", font=font(22), fill=MUTED, anchor="rm")
+        chip(d, W - 135, cy, f"{wr}%", GOLD if i == 0 else SIDE_A, 22, pad=30)
     return jpeg(img)
 
 
