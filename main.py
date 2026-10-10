@@ -4,7 +4,7 @@ Battle = whose @username is better.
   * looks up the @ on Fragment (sold price / auction / asking price in TON)
   * checks if the @ is a real word (regular words are cool)
   * rates length, digits, underscores
-  * shows a tier + TON price, no raw points
+  * shows a score out of 10, a tier, and a side-by-side stats table
 
 Env vars: BOT_TOKEN (required), PORT + RENDER_EXTERNAL_URL (Render sets both),
           PUBLIC_URL (custom domain only), FONT_PATH (optional)
@@ -165,9 +165,9 @@ def estimate_ton(name, is_word):
 
 
 def rate_username(name, frag, is_word):
-    """0-100 rating of the @ itself. Not shown as points, only as a tier + bar."""
+    """0-100 rating of the @ itself (one decimal). Shown as score/10 in the image."""
     if not name:
-        return 0
+        return 0.0
     n = len(name)
     s = {4: 35, 5: 30, 6: 22, 7: 15, 8: 10}.get(n, 4 if n <= 12 else 1)
     if is_word:
@@ -180,7 +180,7 @@ def rate_username(name, frag, is_word):
     ton = frag.get("ton") if frag else None
     if ton:
         s += min(35, math.log10(ton + 1) * 8)
-    return max(1, min(100, int(round(s))))
+    return round(max(1.0, min(100.0, float(s))), 1)
 
 
 TIER_LIST = [
@@ -222,10 +222,34 @@ def cost_lines(name, frag, is_word):
     return f"EST ~{fmt_ton(est)} TON", word_txt + (" | NOT ON FRAGMENT" if frag else "")
 
 
+STAT_LABELS = ["Length", "Real word", "Digits", "Underscores", "Fragment", "Premium", "Avatar"]
+
+
+def stat_facts(name, frag, is_word, premium, has_pic):
+    """List of (value text, score 0-10) in the same order as STAT_LABELS."""
+    if not name:
+        return [("-", 0)] * 5 + [("Yes" if premium else "No", 5 if premium else 2),
+                                 ("Yes" if has_pic else "None", 7 if has_pic else 2)]
+    n = len(name)
+    digits = sum(ch.isdigit() for ch in name)
+    unders = name.count("_")
+    ton = (frag or {}).get("ton")
+    return [
+        (f"{n} letters", {4: 10, 5: 9, 6: 7, 7: 5, 8: 4}.get(n, 2 if n <= 12 else 1)),
+        ("Yes" if is_word else "No", 9 if is_word else 2),
+        (str(digits), max(0.5, 10 - digits * 3)),
+        (str(unders), max(0.5, 10 - unders * 4)),
+        ((f"{fmt_ton(ton)} TON", min(10, math.log10(ton + 1) * 2.5)) if ton else ("-", 0)),
+        ("Yes" if premium else "No", 5 if premium else 2),
+        ("Yes" if has_pic else "None", 7 if has_pic else 2),
+    ]
+
+
 # ======================================================================
 # IMAGES (simple + fast)
 # ======================================================================
-W, H = 960, 540
+W, H = 960, 540          # banner + leaderboard
+BW, BH = 800, 1000       # battle card (portrait, like a profile battle)
 GOLD = (255, 200, 40)
 CYAN = (0, 210, 255)
 PINK = (255, 60, 180)
@@ -292,19 +316,20 @@ def lighten(c, k):
 
 def jpeg(img):
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, "JPEG", quality=85)
+    img.convert("RGB").save(buf, "JPEG", quality=88)
     return buf.getvalue()
 
 
 _BG = {}
 
 
-def background():
-    if "bg" not in _BG:
-        mask = Image.linear_gradient("L").resize((W, H))
-        _BG["bg"] = Image.composite(Image.new("RGB", (W, H), (30, 10, 50)),
-                                    Image.new("RGB", (W, H), (8, 10, 24)), mask)
-    return _BG["bg"].copy()
+def background(w=W, h=H, dark=False):
+    key = (w, h, dark)
+    if key not in _BG:
+        mask = Image.linear_gradient("L").resize((w, h))
+        top, bot = ((26, 21, 14), (9, 9, 11)) if dark else ((30, 10, 50), (8, 10, 24))
+        _BG[key] = Image.composite(Image.new("RGB", (w, h), top), Image.new("RGB", (w, h), bot), mask)
+    return _BG[key].copy()
 
 
 def circle_paste(img, cx, cy, r, source):
@@ -339,18 +364,18 @@ def pill(d, cx, cy, text, color, size=20):
     d.text((cx, cy), text, font=f, fill=lighten(color, 0.3), anchor="mm")
 
 
-def header(d, tag):
+def header(d, tag, w=W):
     d.text((30, 38), "TELEMAXXING", font=font(36), fill=GREEN, anchor="lm")
-    pill(d, W - 120, 38, tag, CYAN, 16)
+    pill(d, w - 120, 38, tag, CYAN, 16)
 
 
 def stamp_mogged(img, cx, cy):
-    layer = Image.new("RGBA", (300, 80), (0, 0, 0, 0))
+    layer = Image.new("RGBA", (250, 66), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    d.rectangle((0, 8, 300, 72), fill=GREEN + (255,))
-    d.rectangle((0, 8, 300, 14), fill=(20, 20, 20, 255))
-    d.rectangle((0, 66, 300, 72), fill=(20, 20, 20, 255))
-    d.text((150, 40), "MOGGED!", font=font(44), fill=RED, anchor="mm", stroke_width=3,
+    d.rectangle((0, 6, 250, 60), fill=GREEN + (255,))
+    d.rectangle((0, 6, 250, 11), fill=(20, 20, 20, 255))
+    d.rectangle((0, 55, 250, 60), fill=(20, 20, 20, 255))
+    d.text((125, 33), "MOGGED!", font=font(36), fill=RED, anchor="mm", stroke_width=3,
            stroke_fill=(0, 0, 0))
     layer = layer.rotate(12, expand=True, resample=Image.BICUBIC)
     img.paste(layer, (cx - layer.width // 2, cy - layer.height // 2), layer)
@@ -363,46 +388,89 @@ def crown(d, cx, y):
     d.polygon(pts, fill=GOLD, outline=(160, 110, 0))
 
 
+CARD_BG = (20, 20, 25)
+CARD_LINE = (48, 48, 58)
+TABLE_BG = (16, 16, 20)
+
+
+def record_line(uid):
+    e = RECORDS.get("global", {}).get(str(uid))
+    if not e:
+        return "0 battles"
+    return f"{e['w'] + e['l']} battles | {e['w']} wins"
+
+
 def fighter(img, x0, x1, color, p, winner):
     d = ImageDraw.Draw(img)
-    ring = GOLD if winner else darken(color, 0.55)
-    d.rounded_rectangle((x0, 80, x1, 430), 24, fill=(14, 17, 36), outline=ring, width=4 if winner else 2)
+    ring = GOLD if winner else (70, 72, 84)
+    d.rounded_rectangle((x0, 100, x1, 505), 26, fill=CARD_BG, outline=ring if winner else CARD_LINE,
+                        width=3 if winner else 2)
     cx = (x0 + x1) // 2
-    avatar(img, cx, 165, 62, p["pfp"], (p["name"][:1] or "?").upper(), ring, gray=not winner)
+    avatar(img, cx, 195, 60, p["pfp"], (p["name"][:1] or "?").upper(), ring, gray=not winner)
     d = ImageDraw.Draw(img)
     if winner:
-        crown(d, cx, 78)
+        crown(d, cx, 118)
     else:
-        stamp_mogged(img, cx, 165)
+        stamp_mogged(img, cx, 200)
         d = ImageDraw.Draw(img)
+    mw = x1 - x0 - 30
     name = p["name"][:16]
-    d.text((cx, 258), name, font=fit_font(name, x1 - x0 - 30, 32), fill=WHITE, anchor="mm")
-    handle = f"@{p['username']}" if p["username"] else "no username"
-    d.text((cx, 290), handle, font=fit_font(handle, x1 - x0 - 30, 24), fill=lighten(color, 0.4), anchor="mm")
-    pill(d, cx, 328, p["tier"], p["tier_color"], 20)
-    bw = 240
-    d.rounded_rectangle((cx - bw // 2, 358, cx + bw // 2, 368), 5, fill=(40, 44, 70))
-    fill_w = max(10, int(bw * p["rating"] / 100))
-    d.rounded_rectangle((cx - bw // 2, 358, cx - bw // 2 + fill_w, 368), 5, fill=p["tier_color"])
-    d.text((cx, 394), p["cost"], font=fit_font(p["cost"], x1 - x0 - 24, 22), fill=GOLD if winner else GREY,
+    d.text((cx, 290), name, font=fit_font(name, mw, 30), fill=WHITE if winner else (190, 190, 198),
            anchor="mm")
-    d.text((cx, 418), p["sub"], font=fit_font(p["sub"], x1 - x0 - 24, 16), fill=GREY, anchor="mm")
+    handle = f"@{p['username']}" if p["username"] else "no username"
+    d.text((cx, 320), handle, font=fit_font(handle, mw, 22), fill=GREY, anchor="mm")
+    pill(d, cx, 355, p["tier"], p["tier_color"] if winner else (120, 124, 140), 16)
+    score = f"{p['rating'] / 10:.2f}"
+    d.text((cx, 412), score, font=font(62), fill=WHITE if winner else (150, 150, 158), anchor="mm")
+    d.text((cx, 458), p["cost"], font=fit_font(p["cost"], mw, 18), fill=GOLD if winner else GREY,
+           anchor="mm")
+    d.text((cx, 483), record_line(p["id"]), font=font(14), fill=(100, 104, 118), anchor="mm")
+
+
+def stats_table(img, a, b, a_wins):
+    d = ImageDraw.Draw(img)
+    x0, x1, y0 = 30, 770, 585
+    row_h = 46
+    n = len(STAT_LABELS)
+    d.rounded_rectangle((x0, y0, x1, y0 + 20 + n * row_h), 22, fill=TABLE_BG, outline=CARD_LINE, width=2)
+    lx, rx, maxw = x0 + 24, x1 - 24, 270
+    for i, label in enumerate(STAT_LABELS):
+        ry = y0 + 32 + i * row_h
+        (va, sa), (vb, sb) = a["facts"][i], b["facts"][i]
+        a_better, b_better = sa > sb, sb > sa
+        d.text((400, ry), label, font=font(15), fill=(120, 124, 140), anchor="mm")
+        d.text((lx, ry), va, font=fit_font(va, 200, 19), fill=WHITE if a_better else (140, 144, 156),
+               anchor="lm")
+        d.text((rx, ry), vb, font=fit_font(vb, 200, 19), fill=WHITE if b_better else (140, 144, 156),
+               anchor="rm")
+        ya = ry + 17
+        wa, wb = max(4, int(maxw * sa / 10)), max(4, int(maxw * sb / 10))
+        d.rounded_rectangle((lx, ya, lx + wa, ya + 5), 2, fill=CYAN if a_better else (60, 62, 74))
+        d.rounded_rectangle((rx - wb, ya, rx, ya + 5), 2, fill=PINK if b_better else (60, 62, 74))
 
 
 def make_battle_image(a, b, winner_is_a):
-    img = background()
+    img = background(BW, BH, dark=True)
     d = ImageDraw.Draw(img)
-    header(d, "@ BATTLE")
-    fighter(img, 30, 450, CYAN, a, winner_is_a)
-    fighter(img, 510, 930, PINK, b, not winner_is_a)
+    d.text((30, 50), "TELEMAXXING", font=font(38), fill=WHITE, anchor="lm")
+    pill(d, BW - 125, 50, "USERNAME BATTLE", (130, 134, 150), 15)
+    fighter(img, 30, 392, CYAN, a, winner_is_a)
+    fighter(img, 408, 770, PINK, b, not winner_is_a)
     d = ImageDraw.Draw(img)
-    d.ellipse((450, 222, 510, 282), fill=(10, 14, 30), outline=GREEN, width=3)
-    d.text((480, 252), "VS", font=font(26), fill=GREEN, anchor="mm")
+    d.ellipse((370, 175, 430, 235), fill=(10, 10, 14), outline=(70, 72, 84), width=2)
+    d.text((400, 205), "VS", font=font(24), fill=WHITE, anchor="mm")
+
     win, lose = (a, b) if winner_is_a else (b, a)
-    wn, ln = win["name"][:12].upper(), lose["name"][:12].upper()
-    line = f"{wn}  MOGS  {ln}"
-    d.text((W // 2, 478), line, font=fit_font(line, 860, 38), fill=GOLD, anchor="mm")
-    d.text((W // 2, 516), "whose @ is better?", font=font(16), fill=GREY, anchor="mm")
+    diff = abs(a["rating"] - b["rating"]) / 10
+    d.rounded_rectangle((30, 520, 770, 566), 23, fill=TABLE_BG, outline=CARD_LINE, width=2)
+    line = f"{win['name'][:14]} MOGS {lose['name'][:14]}"
+    d.text((52, 543), line, font=fit_font(line, 560, 20), fill=WHITE, anchor="lm")
+    pill(d, 700, 543, f"+{diff:.2f}", GOLD, 16)
+
+    stats_table(img, a, b, winner_is_a)
+    d = ImageDraw.Draw(img)
+    d.text((400, 968), "refresh to re-check your @ on Fragment", font=font(14), fill=(80, 84, 98),
+           anchor="mm")
     return jpeg(img)
 
 
@@ -650,6 +718,7 @@ async def build_profile(bot, user, fresh=False):
     rating = rate_username(uname, frag, word)
     tier, tcol = tier_of(rating) if uname else ("NO @", GREY)
     cost, sub = cost_lines(uname, frag, word)
+    premium = bool(getattr(user, "is_premium", False))
     prof = {
         "id": user.id,
         "name": img_safe(user.first_name or user.full_name or "", "Player"),
@@ -661,6 +730,7 @@ async def build_profile(bot, user, fresh=False):
         "sub": sub,
         "ton": (frag or {}).get("ton") or 0,
         "pfp": pic,
+        "facts": stat_facts(uname, frag, word, premium, pic is not None),
     }
     PROFILES[user.id] = (time.time() + 600, prof)
     if len(PROFILES) > 500:
@@ -678,9 +748,8 @@ def decide_winner(a, b):
 
 def battle_kb(a, b):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Leaderboard", callback_data=f"lb:{a}:{b}"),
-         InlineKeyboardButton("Refresh @", callback_data=f"rf:{a}:{b}")],
-        [InlineKeyboardButton("Challenge someone", switch_inline_query_current_chat="")],
+        [InlineKeyboardButton("Leaderboard", callback_data=f"lb:{a}:{b}")],
+        [InlineKeyboardButton("Refresh profile", callback_data=f"rf:{a}:{b}")],
     ])
 
 
