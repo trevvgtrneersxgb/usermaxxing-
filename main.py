@@ -5,7 +5,8 @@ Render-safe layout:
   * python-telegram-bot polling runs on the MAIN thread
   * every startup problem prints a clear message instead of dying silently
 
-INLINE-ONLY bot: type @yourbot in any chat -> pick Challenge / My scan / Leaderboard.
+INLINE-ONLY bot: type @yourbot in any chat -> pick the challenge, someone accepts, battle appears
+with Leaderboard / Refresh profile buttons under it.
 Images are served by the Flask server (Telegram fetches them by URL).
 
 BotFather: /setinline  (enable inline mode, add a placeholder text)
@@ -40,7 +41,6 @@ from telegram import (
     Update,
     User,
 )
-from telegram.constants import ChatType
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -268,7 +268,7 @@ def panel(img, box, radius=28, fill=(8, 10, 24, 170), outline=(255, 255, 255, 50
     # top highlight
     hl = Image.new("RGBA", img.size, (0, 0, 0, 0))
     ImageDraw.Draw(hl).rounded_rectangle(
-        (box[0] + 2, box[1] + 2, box[2] - 2, box[1] + 46), radius - 2, fill=(255, 255, 255, 14)
+        (box[0] + 2, box[1] + 2, box[2] - 2, box[1] + 46), radius - 2, fill=(255, 255, 255, 6)
     )
     img.alpha_composite(hl)
 
@@ -360,7 +360,7 @@ def crown(img, cx, y, w=120, h=58):
     aa_shape(img, (cx - w / 2, y, cx + w / 2, y + h), paint, pad=14)
 
 
-def rays(img, cx, cy, seed):
+def rays(img, cx, cy, seed, scale=1.0):
     """Golden god-rays behind the winner."""
     layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
@@ -368,18 +368,18 @@ def rays(img, cx, cy, seed):
     for i in range(n):
         a0 = (i / n) * 2 * math.pi
         a1 = a0 + math.pi / n * 0.8
-        r = 330
+        r = 330 * scale
         ld.polygon([(cx, cy), (cx + math.cos(a0) * r, cy + math.sin(a0) * r),
                     (cx + math.cos(a1) * r, cy + math.sin(a1) * r)], fill=GOLD + (30,))
     img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(3)))
 
 
-def confetti(img, cx, cy, seed):
+def confetti(img, cx, cy, seed, scale=1.0):
     rnd = random.Random(seed)
     layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
     for _ in range(60):
         ang = rnd.uniform(0, 2 * math.pi)
-        r = rnd.uniform(170, 245)
+        r = rnd.uniform(170, 245) * scale
         x, y = cx + math.cos(ang) * r, cy + math.sin(ang) * r * 0.92
         col = rnd.choice([GOLD, CYAN, PINK, GREEN, WHITE])
         s = rnd.randint(7, 15)
@@ -390,20 +390,20 @@ def confetti(img, cx, cy, seed):
     sd = ImageDraw.Draw(layer)
     for _ in range(10):
         ang = rnd.uniform(0, 2 * math.pi)
-        r = rnd.uniform(150, 260)
+        r = rnd.uniform(150, 260) * scale
         sparkle(sd, cx + math.cos(ang) * r, cy + math.sin(ang) * r, rnd.randint(8, 15), WHITE + (230,))
     img.alpha_composite(layer)
 
 
-def mogged_banner(width):
-    bw, bh = width, 104
+def mogged_banner(width, bh=104):
+    bw = width
     ss = 2
     layer = Image.new("RGBA", (bw * ss, bh * ss), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     d.rectangle([0, 0, bw * ss, bh * ss], fill=GREEN + (255,))
     d.rectangle([0, 0, bw * ss, 8 * ss], fill=(20, 20, 20, 255))
     d.rectangle([0, (bh - 8) * ss, bw * ss, bh * ss], fill=(20, 20, 20, 255))
-    f = fit_font("MOGGED!", (bw - 40) * ss, 72 * ss, 20)
+    f = fit_font("MOGGED!", (bw - 30) * ss, int(bh * 0.69) * ss, 20)
     d.text((bw * ss / 2, bh * ss / 2), "MOGGED!", font=f, fill=RED, anchor="mm",
            stroke_width=4 * ss, stroke_fill=(0, 0, 0))
     layer = layer.resize((bw, bh), Image.LANCZOS)
@@ -479,47 +479,9 @@ def info_lines(img, cx, y, p, color, score_color, score_font=48):
                              fill=score_color, anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0))
 
 
-# ------------------------------------------------------------ battle card
-def draw_fighter(img, cx, color, p, is_winner, seed):
-    S, y = 290, 168
-    if is_winner:
-        rays(img, cx, y + S // 2, seed)
-        confetti(img, cx, y + S // 2, seed)
-    avatar(img, cx, y, S, p.get("pfp"), p.get("name"), color, winner=is_winner, gray=not is_winner)
-    if p["parts"].get("premium", 0) > 0:
-        star_badge(img, cx + int(S * 0.38), y + int(S * 0.84))
-    if is_winner:
-        crown(img, cx, y - 68)
-    else:
-        banner = mogged_banner(S + 30)
-        img.alpha_composite(banner, (cx - banner.width // 2, y + S // 2 - banner.height // 2))
-    info_lines(img, cx, y + S + 38, p, color, GOLD if is_winner else GREY)
-
-
-def draw_stats(img, a, b):
-    panel(img, (392, 200, 888, 610))
-    d = ImageDraw.Draw(img)
-    cx, bar_max, bh = 640, 190, 18
-    for i, (key, label) in enumerate(ROWS):
-        y0 = 218 + i * 56
-        va, vb = a["parts"].get(key, 0), b["parts"].get(key, 0)
-        d.text((cx, y0 + 4), label, font=font(17), fill=(190, 198, 218), anchor="mm")
-        mx = MAXES[key]
-        aa_rrect(img, (cx - 10 - bar_max, y0 + 17, cx - 10, y0 + 17 + bh), 9, fill=(255, 255, 255, 14))
-        aa_rrect(img, (cx + 10, y0 + 17, cx + 10 + bar_max, y0 + 17 + bh), 9, fill=(255, 255, 255, 14))
-        for val, other, color, side in ((va, vb, CYAN, -1), (vb, va, PINK, 1)):
-            length = max(bh, int(bar_max * min(val, mx) / mx)) if mx else bh
-            win = val >= other
-            c1 = color if win else darken(color, 0.45)
-            c2 = lighten(color, 0.35) if win else darken(color, 0.6)
-            if side < 0:
-                bx, tx, anchor = cx - 10 - length, cx - 10 - length - 10, "rm"
-                c1, c2 = c2, c1
-            else:
-                bx, tx, anchor = cx + 10, cx + 10 + length + 10, "lm"
-            gbar(img, bx, y0 + 17, length, bh, c1, c2, glow=color if (win and val != other) else None)
-            ImageDraw.Draw(img).text((tx, y0 + 26), str(val), font=font(19),
-                                     fill=WHITE if win else (140, 148, 168), anchor=anchor)
+# ------------------------------------------------------------ card layout
+CW, CH = 1080, 1240
+_BG2 = {}
 
 
 def _jpeg(img):
@@ -529,121 +491,168 @@ def _jpeg(img):
     return buf
 
 
+def background2():
+    """Dark, clean backdrop for the tall cards."""
+    if "bg" in _BG2:
+        return _BG2["bg"].copy()
+    bg = gradient((CW, CH), (7, 9, 20), (22, 9, 36)).convert("RGBA")
+    blob(bg, (290, 390), 430, CYAN, 44)
+    blob(bg, (790, 390), 430, PINK, 44)
+    blob(bg, (540, 1160), 430, (90, 40, 200), 38)
+    dots = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
+    dd = ImageDraw.Draw(dots)
+    for gx in range(20, CW, 40):
+        for gy in range(20, CH, 40):
+            dd.ellipse((gx - 1, gy - 1, gx + 1, gy + 1), fill=(255, 255, 255, 16))
+    bg.alpha_composite(dots)
+    rnd = random.Random(11)
+    sp = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(sp)
+    for _ in range(22):
+        sparkle(sd, rnd.randint(20, CW - 20), rnd.randint(20, CH - 20), rnd.randint(4, 9),
+                rnd.choice([WHITE, CYAN, PINK, GOLD]) + (rnd.randint(50, 130),))
+    bg.alpha_composite(sp)
+    vig = Image.radial_gradient("L").resize((CW, CH))
+    dark = Image.new("RGBA", (CW, CH), (0, 0, 0, 255))
+    dark.putalpha(vig.point(lambda v: int(max(0, v - 120) * 1.1)))
+    bg.alpha_composite(dark)
+    _BG2["bg"] = bg
+    return bg.copy()
+
+
+def header(img, tag, tag_color):
+    glow_text(img, (60, 62), "TELEMAXXING", font(44), GREEN, blur=12, anchor="lm")
+    f = font(20)
+    w = f.getlength(tag) + 40
+    pill(img, int(1020 - w / 2), 62, tag, tag_color, f)
+
+
+def footer(img, text="who mogs who?   -   telemaxxing"):
+    ImageDraw.Draw(img).text((CW // 2, 1210), text, font=font(18), fill=(120, 128, 152), anchor="mm")
+
+
+# ------------------------------------------------------------ battle card
+def fighter_card(img, x0, x1, color, p, winner, seed):
+    y0, y1, S, ay = 118, 640, 226, 192
+    cx = (x0 + x1) // 2
+    ring = GOLD if winner else darken(color, 0.6)
+    if winner:
+        gl = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(gl).rounded_rectangle((x0, y0, x1, y1), 30, outline=GOLD + (255,), width=8)
+        img.alpha_composite(gl.filter(ImageFilter.GaussianBlur(14)))
+    panel(img, (x0, y0, x1, y1), 30, fill=(10, 13, 28, 228), outline=ring + (235,))
+    if winner:
+        rays(img, cx, ay + S // 2, seed, 0.66)
+        confetti(img, cx, ay + S // 2, seed, 0.56)
+    avatar(img, cx, ay, S, p.get("pfp"), p.get("name"), color, winner=winner, gray=not winner)
+    if p["parts"].get("premium", 0) > 0:
+        star_badge(img, cx + int(S * 0.38), ay + int(S * 0.84), r=17)
+    if winner:
+        crown(img, cx, ay - 62, w=104, h=50)
+    else:
+        banner = mogged_banner(S + 40, 76)
+        img.alpha_composite(banner, (cx - banner.width // 2, ay + S // 2 - banner.height // 2))
+    info_lines(img, cx, ay + S + 38, p, color, GOLD if winner else GREY, score_font=62)
+
+
+def verdict_bar(img, win, lose, margin, ra, rb):
+    panel(img, (50, 662, 1030, 724), radius=20, fill=(10, 13, 28, 225))
+    d = ImageDraw.Draw(img)
+    wn, ln = win["name"][:12].upper(), lose["name"][:12].upper()
+    f = fit_font(f"{wn} MOGS {ln}", 600, 32, 18)
+    x = 84
+    for txt, col in ((wn, GOLD), (" MOGS ", GREY), (ln, WHITE)):
+        d.text((x, 693), txt, font=f, fill=col, anchor="lm")
+        x += f.getlength(txt)
+    pill(img, 790, 693, f"ROUNDS  {ra} - {rb}", CYAN, font(16))
+    pill(img, 972, 693, f"+{margin}" if margin else "TIE", GOLD, font(24))
+
+
+def draw_stats(img, a, b):
+    panel(img, (50, 748, 1030, 1176), radius=26)
+    d = ImageDraw.Draw(img)
+    cx, bar_max, bh = 540, 400, 20
+    for i, (key, label) in enumerate(ROWS):
+        y0 = 770 + i * 56
+        va, vb = a["parts"].get(key, 0), b["parts"].get(key, 0)
+        d.text((cx, y0 + 4), label, font=font(18), fill=(190, 198, 218), anchor="mm")
+        mx = MAXES[key]
+        aa_rrect(img, (cx - 12 - bar_max, y0 + 18, cx - 12, y0 + 18 + bh), 10, fill=(255, 255, 255, 14))
+        aa_rrect(img, (cx + 12, y0 + 18, cx + 12 + bar_max, y0 + 18 + bh), 10, fill=(255, 255, 255, 14))
+        for val, other, color, side in ((va, vb, CYAN, -1), (vb, va, PINK, 1)):
+            length = max(bh, int(bar_max * min(val, mx) / mx)) if mx else bh
+            win = val >= other
+            c1 = color if win else darken(color, 0.45)
+            c2 = lighten(color, 0.35) if win else darken(color, 0.6)
+            if side < 0:
+                bx, tx, anchor = cx - 12 - length, cx - 12 - length - 10, "rm"
+                c1, c2 = c2, c1
+            else:
+                bx, tx, anchor = cx + 12, cx + 12 + length + 10, "lm"
+            gbar(img, bx, y0 + 18, length, bh, c1, c2, glow=color if (win and val != other) else None)
+            ImageDraw.Draw(img).text((tx, y0 + 28), str(val), font=font(20),
+                                     fill=WHITE if win else (140, 148, 168), anchor=anchor)
+
+
 def make_battle_image(a, b, winner_is_a):
     """a / b: dicts with name, score, tier, parts{}, pfp (PIL image or None),
     optional handle / rec strings."""
-    img = background()
-    glow_text(img, (640, 40), "PROFILE BATTLE", font(50), CYAN, blur=14)
+    img = background2()
+    header(img, "PROFILE BATTLE", CYAN)
+    seed = a["score"] * 31 + b["score"]
+    fighter_card(img, 50, 520, CYAN, a, winner_is_a, seed)
+    fighter_card(img, 560, 1030, PINK, b, not winner_is_a, seed + 1)
 
-    glow_ring(img, (600, 70, 680, 150), GREEN, 8, blur=12)
-    aa_ellipse(img, (600, 70, 680, 150), fill=(10, 14, 30, 255), outline=GREEN + (255,), width=4)
-    ImageDraw.Draw(img).text((640, 111), "VS", font=font(38), fill=GREEN, anchor="mm")
+    glow_ring(img, (500, 339, 580, 419), GREEN, 8, blur=12)
+    aa_ellipse(img, (500, 339, 580, 419), fill=(10, 14, 30, 255), outline=GREEN + (255,), width=4)
+    ImageDraw.Draw(img).text((540, 380), "VS", font=font(36), fill=GREEN, anchor="mm")
 
     ra = sum(1 for k, _ in ROWS if a["parts"].get(k, 0) > b["parts"].get(k, 0))
     rb = sum(1 for k, _ in ROWS if b["parts"].get(k, 0) > a["parts"].get(k, 0))
-    pill(img, 640, 178, f"ROUNDS   {ra} - {rb}", GOLD, font(16))
-
-    seed = a["score"] * 31 + b["score"]
-    draw_fighter(img, 210, CYAN, a, winner_is_a, seed)
-    draw_fighter(img, 1070, PINK, b, not winner_is_a, seed + 1)
-    draw_stats(img, a, b)
-
     win, lose = (a, b) if winner_is_a else (b, a)
-    margin = abs(a["score"] - b["score"])
-    line = f"{win['name'][:12].upper()} MOGGED {lose['name'][:12].upper()}"
-    glow_text(img, (640, 646), line, fit_font(line, 900, 36, 22), GOLD, blur=10, fill=GOLD, stroke=3)
-    pill(img, 640, 690, f"{win['score']} - {lose['score']}   |   WON BY {margin} PTS" if margin
-         else f"{win['score']} - {lose['score']}   |   COIN-FLIP WIN", GREEN, font(16))
-    return _jpeg(img)
-
-
-# ------------------------------------------------------------ score card
-LADDER = [(0, "NPC"), (50, "SIDE CHARACTER"), (80, "MAIN CHARACTER"),
-          (110, "CERTIFIED MOGGER"), (140, "FINAL BOSS")]
-MAX_TOTAL = sum(MAXES.values())
-
-
-def make_score_card(p):
-    """Single-profile scan card with every stat drawn in the picture."""
-    img = background()
-    col = tier_color(p["tier"])
-    glow_text(img, (640, 40), "PROFILE SCAN", font(46), col, blur=14)
-
-    cx, S, y = 255, 250, 128
-    avatar(img, cx, y, S, p.get("pfp"), p.get("name"), col, winner=p["score"] >= 140)
-    if p["score"] >= 140:
-        crown(img, cx, y - 66)
-    if p["parts"].get("premium", 0) > 0:
-        star_badge(img, cx + int(S * 0.38), y + int(S * 0.84))
-    info_lines(img, cx, y + S + 36, p, col, GOLD, score_font=54)
-
-    panel(img, (520, 120, 1240, 592))
-    d = ImageDraw.Draw(img)
-    for i, (key, label) in enumerate(ROWS):
-        cy = 156 + i * 62
-        val, mx = p["parts"].get(key, 0), MAXES[key]
-        d.text((552, cy), label, font=font(21), fill=(200, 207, 226), anchor="lm")
-        aa_rrect(img, (740, cy - 12, 1110, cy + 12), 12, fill=(255, 255, 255, 16))
-        if val > 0:
-            gbar(img, 740, cy - 12, 370 * min(val, mx) / mx, 24, darken(col, 0.75), lighten(col, 0.3),
-                 glow=col)
-        ImageDraw.Draw(img).text((1220, cy), f"{val}/{mx}", font=font(22),
-                                 fill=WHITE if val >= mx * 0.6 else (160, 168, 190), anchor="rm")
-
-    # tier ladder
-    x0, x1, by = 100, 1180, 640
-    unit = (x1 - x0) / MAX_TOTAL
-    score = min(p["score"], MAX_TOTAL)
-    nxt = next(((t, n) for t, n in LADDER if t > score), None)
-    msg = f"{nxt[0] - score} PTS TO {nxt[1]}" if nxt else "MAX TIER REACHED"
-    ImageDraw.Draw(img).text((640, 612), msg, font=font(22), fill=WHITE, anchor="mm")
-    for i, (lo, name) in enumerate(LADDER):
-        hi = LADDER[i + 1][0] if i + 1 < len(LADDER) else MAX_TOTAL
-        sx0, sx1 = x0 + lo * unit + 2, x0 + hi * unit - 2
-        c = tier_color(name)
-        aa_rrect(img, (sx0, by, sx1, by + 20), 10, fill=darken(c, 0.28) + (255,))
-        if score > lo:
-            gbar(img, sx0, by, (min(score, hi) - lo) * unit - 2, 20, darken(c, 0.8), lighten(c, 0.2))
-        ImageDraw.Draw(img).text(((sx0 + sx1) / 2, by + 40), name, font=font(14),
-                                 fill=lighten(c, 0.2), anchor="mm")
-    mx_ = x0 + score * unit
-    ImageDraw.Draw(img).polygon([(mx_ - 9, by - 14), (mx_ + 9, by - 14), (mx_, by - 2)], fill=WHITE)
+    verdict_bar(img, win, lose, abs(a["score"] - b["score"]), ra, rb)
+    draw_stats(img, a, b)
+    footer(img)
     return _jpeg(img)
 
 
 # ------------------------------------------------------------ leaderboard
 def make_leaderboard(rows, title="LEADERBOARD"):
     """rows: list of dicts name, w, l (already sorted, best first)."""
-    img = background()
-    glow_text(img, (640, 46), title, font(52), GOLD, blur=16)
-    panel(img, (180, 110, 1100, 680))
+    img = background2()
+    header(img, title, GOLD)
+    panel(img, (50, 118, 1030, 1176), radius=30)
     d = ImageDraw.Draw(img)
     if not rows:
-        d.text((640, 360), "NO BATTLES YET", font=font(54), fill=WHITE, anchor="mm")
-        d.text((640, 430), "use /challenge to start the first one", font=font(26),
+        d.text((540, 600), "NO BATTLES YET", font=font(56), fill=WHITE, anchor="mm")
+        d.text((540, 672), "challenge someone to start the board", font=font(26),
                fill=(165, 175, 198), anchor="mm")
+        footer(img)
         return _jpeg(img)
     medals = [GOLD, (205, 210, 222), (205, 127, 50)]
     for i, r in enumerate(rows[:5]):
-        cy = 178 + i * 98
+        cy = 238 + i * 190
         total = r["w"] + r["l"]
         wr = r["w"] / total if total else 0
         mc = medals[i] if i < 3 else (90, 100, 140)
-        glow_ring(img, (214, cy - 34, 282, cy + 34), mc, 8, blur=10)
-        aa_ellipse(img, (214, cy - 34, 282, cy + 34), fill=darken(mc, 0.35) + (255,),
-                   outline=mc + (255,), width=4)
+        if i:
+            d.line([(110, cy - 94), (970, cy - 94)], fill=(255, 255, 255, 18), width=2)
+        glow_ring(img, (84, cy - 46, 176, cy + 46), mc, 8, blur=10)
+        aa_ellipse(img, (84, cy - 46, 176, cy + 46), fill=darken(mc, 0.35) + (255,),
+                   outline=mc + (255,), width=5)
         d = ImageDraw.Draw(img)
-        d.text((248, cy), str(i + 1), font=font(38), fill=WHITE, anchor="mm")
+        d.text((130, cy), str(i + 1), font=font(48), fill=WHITE, anchor="mm")
         nm = (r["name"] or "Player")[:16]
-        d.text((320, cy - 18), nm, font=fit_font(nm, 420, 36, 20), fill=WHITE, anchor="lm",
+        d.text((210, cy - 26), nm, font=fit_font(nm, 560, 46, 24), fill=WHITE, anchor="lm",
                stroke_width=2, stroke_fill=(0, 0, 0))
-        aa_rrect(img, (320, cy + 10, 780, cy + 28), 9, fill=(255, 255, 255, 16))
+        aa_rrect(img, (210, cy + 14, 780, cy + 40), 13, fill=(255, 255, 255, 16))
         if wr > 0:
-            gbar(img, 320, cy + 10, 460 * wr, 18, darken(mc, 0.7), lighten(mc, 0.2), glow=mc)
+            gbar(img, 210, cy + 14, 570 * wr, 26, darken(mc, 0.7), lighten(mc, 0.2), glow=mc)
         d = ImageDraw.Draw(img)
-        d.text((830, cy), f"{r['w']}W - {r['l']}L", font=font(26), fill=(200, 207, 226), anchor="lm")
-        d.text((1062, cy), f"{int(round(wr * 100))}%", font=font(42), fill=GOLD, anchor="rm",
+        d.text((1000, cy - 16), f"{int(round(wr * 100))}%", font=font(54), fill=GOLD, anchor="rm",
                stroke_width=2, stroke_fill=(0, 0, 0))
+        d.text((1000, cy + 28), f"{r['w']}W - {r['l']}L", font=font(24), fill=(190, 198, 218), anchor="rm")
+    footer(img)
     return _jpeg(img)
 
 
@@ -781,16 +790,6 @@ def route_banner(uid):
     return jpg(cached(f"banner:{name}", 600, lambda: make_challenge_banner(name).getvalue()))
 
 
-@web.get("/score/<int:uid>.jpg")
-def route_score(uid):
-    def build():
-        user = USERS.get(uid)
-        if not user or LOOP is None:
-            return None
-        return asyncio.run_coroutine_threadsafe(score_bytes(user), LOOP).result(timeout=25)
-    return jpg(cached(f"score:{uid}", 60, build))
-
-
 @web.get("/top.jpg")
 def route_top():
     return jpg(cached("top", 30, lambda: make_leaderboard(leaderboard_rows("global")).getvalue()))
@@ -811,9 +810,7 @@ def thumb_bytes(kind):
     sample = {"id": 0, "name": "YOU", "handle": "@you", "rec": "", "score": 96, "tier": tier_for(96),
               "pfp": None, "parts": {"photos": 30, "username": 12, "premium": 0, "bio": 10,
                                      "age": 18, "quality": 16, "aura": 10}}
-    if kind == "score":
-        buf = make_score_card(sample)
-    elif kind == "top":
+    if kind == "top":
         buf = make_leaderboard([{"name": "Alex", "w": 9, "l": 2}, {"name": "Sam", "w": 6, "l": 4},
                                 {"name": "Kai", "w": 3, "l": 5}])
     else:
@@ -821,6 +818,53 @@ def thumb_bytes(kind):
     out = io.BytesIO()
     Image.open(buf).resize((320, 180), Image.LANCZOS).save(out, "JPEG", quality=85)
     return out.getvalue()
+
+
+@web.before_request
+def _t0():
+    from flask import g
+    g.t0 = time.perf_counter()
+
+
+@web.after_request
+def _log_request(resp):
+    from flask import g, request
+    if request.path not in ("/", "/healthz"):
+        ms = (time.perf_counter() - getattr(g, "t0", time.perf_counter())) * 1000
+        log.info("img %s -> %s (%.0f ms, %s bytes)", request.path, resp.status_code, ms,
+                 resp.calculate_content_length() or "?")
+    return resp
+
+
+def prewarm():
+    """Render every static image once at startup so Telegram never waits on a cold render,
+    then fetch one through our own public URL to prove it is reachable."""
+    try:
+        for kind in ("banner", "top"):
+            cached(f"thumb:{kind}", 86400, lambda k=kind: thumb_bytes(k))
+        cached("top", 30, lambda: make_leaderboard(leaderboard_rows("global")).getvalue())
+        log.info("prewarm: images ready")
+    except Exception:
+        log.exception("prewarm failed")
+        return
+    if not BASE_URL:
+        return
+    try:
+        import httpx
+    except ImportError:
+        return
+    for attempt in range(6):
+        time.sleep(3)
+        try:
+            r = httpx.get(f"{BASE_URL}/thumb/banner.jpg", timeout=15, follow_redirects=True)
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+                log.info("SELF-TEST OK: %s/thumb/banner.jpg is publicly reachable", BASE_URL)
+                return
+            log.warning("SELF-TEST got %s %s", r.status_code, r.headers.get("content-type"))
+        except Exception as e:
+            log.warning("SELF-TEST attempt %d failed: %s", attempt + 1, e)
+    log.error("SELF-TEST FAILED: %s is not reachable from outside - Telegram cannot load images. "
+              "Check PUBLIC_URL / that this is a Web Service.", BASE_URL)
 
 
 def run_web():
@@ -1002,23 +1046,45 @@ def decide_winner(a, b):
     return h % 2 == 0
 
 
-async def score_bytes(user):
-    p = await build_profile(BOT, user)
-    p["rec"] = rec_str("global", user.id)
-    return await asyncio.to_thread(lambda: make_score_card(p).getvalue())
+def battle_kb(a, b):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Leaderboard", callback_data=f"lb:{a}:{b}")],
+        [InlineKeyboardButton("Refresh profile", callback_data=f"rf:{a}:{b}")],
+        [InlineKeyboardButton("Challenge someone", switch_inline_query_current_chat="")],
+    ])
 
 
-async def battle_url(bot, user_a: User, user_b: User):
+def board_kb(a, b):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Back to battle", callback_data=f"bk:{a}:{b}")]])
+
+
+async def get_user(bot, uid):
+    u = USERS.get(uid)
+    if u is not None:
+        return u
+    try:
+        chat = await bot.get_chat(uid)
+        u = User(id=chat.id, first_name=chat.first_name or "Player", is_bot=False, username=chat.username)
+        USERS[uid] = u
+        return u
+    except TelegramError:
+        return None
+
+
+async def battle_url(bot, user_a: User, user_b: User, record=True):
     """Builds the battle image, stores it for Telegram to fetch, returns its URL."""
     a, b = await asyncio.gather(build_profile(bot, user_a), build_profile(bot, user_b))
     winner_is_a = decide_winner(a, b)
     win, lose = (a, b) if winner_is_a else (b, a)
-    record_result("global", win, lose)
+    if record:
+        record_result("global", win, lose)
     a["rec"], b["rec"] = rec_str("global", a["id"]), rec_str("global", b["id"])
     data = await asyncio.to_thread(lambda: make_battle_image(a, b, winner_is_a).getvalue())
     token = hashlib.sha256(os.urandom(16)).hexdigest()[:24]
     cached(f"img:{token}", 900, lambda: data)
-    return f"{BASE_URL}/img/{token}.jpg"
+    url = f"{BASE_URL}/img/{token}.jpg"
+    _CACHE[f"pair:{user_a.id}:{user_b.id}"] = (time.time() + 900, url)
+    return url
 
 
 # ------------------------------------------------------------------ inline mode
@@ -1030,31 +1096,20 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.error("No PUBLIC_URL / RENDER_EXTERNAL_URL set - inline images cannot be served")
         await q.answer([], cache_time=5)
         return
-
     t = int(time.time() // 60)
-
-    def photo(rid, path, thumb, title, desc, kb=None):
-        return InlineQueryResultPhoto(
-            id=rid, photo_url=f"{BASE_URL}{path}", thumbnail_url=f"{BASE_URL}/thumb/{thumb}.jpg",
-            photo_width=1280, photo_height=720, title=title, description=desc, reply_markup=kb,
-        )
-
     kb = InlineKeyboardMarkup(
         [[InlineKeyboardButton("ACCEPT CHALLENGE", callback_data=f"acc:{user.id}")]]
     )
-    challenge = photo(f"ch{user.id}", f"/banner/{user.id}.jpg?t={t}", "banner",
-                      "Challenge someone", "Post a profile battle anyone can accept", kb)
-    scan = photo(f"sc{user.id}", f"/score/{user.id}.jpg?t={t}", "score",
-                 "My profile scan", "Your score, tier and every stat")
-    board = photo("top", f"/top.jpg?t={t // 2}", "top", "Leaderboard", "Top mogs across all battles")
-
-    text = (q.query or "").lower()
-    results = [challenge, scan, board]
-    if "top" in text or "board" in text:
-        results = [board, challenge, scan]
-    elif "score" in text or "scan" in text or "me" == text.strip():
-        results = [scan, challenge, board]
-    await q.answer(results, cache_time=10, is_personal=True)
+    result = InlineQueryResultPhoto(
+        id=f"ch{user.id}",
+        photo_url=f"{BASE_URL}/banner/{user.id}.jpg?t={t}",
+        thumbnail_url=f"{BASE_URL}/thumb/banner.jpg",
+        photo_width=1280, photo_height=720,
+        title="Challenge to a profile battle",
+        description="Send it - first person to accept fights you",
+        reply_markup=kb,
+    )
+    await q.answer([result], cache_time=5, is_personal=True)
 
 
 async def cb_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1078,23 +1133,20 @@ async def cb_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if on_cooldown(q.from_user.id, 4.0):
         await q.answer("Slow down a sec.", show_alert=True)
         return
-
-    challenger = USERS.get(challenger_id)
-    if challenger is None:  # bot restarted since the challenge was posted
-        try:
-            chat = await context.bot.get_chat(challenger_id)
-            challenger = User(id=chat.id, first_name=chat.first_name or "Player",
-                              is_bot=False, username=chat.username)
-        except TelegramError:
-            await q.answer("Challenge expired - post a new one.", show_alert=True)
-            return
+    challenger = await get_user(context.bot, challenger_id)
+    if challenger is None:
+        await q.answer("Challenge expired - post a new one.", show_alert=True)
+        return
 
     claimed.add(inline_id)
     remember(q.from_user)
     await q.answer("Battle starting...")
     try:
         url = await battle_url(context.bot, challenger, q.from_user)
-        await context.bot.edit_message_media(inline_message_id=inline_id, media=InputMediaPhoto(media=url))
+        await context.bot.edit_message_media(
+            inline_message_id=inline_id, media=InputMediaPhoto(media=url),
+            reply_markup=battle_kb(challenger_id, q.from_user.id),
+        )
     except Exception:
         claimed.discard(inline_id)
         log.exception("inline battle failed")
@@ -1104,9 +1156,51 @@ async def cb_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+async def cb_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Leaderboard / Refresh profile / Back buttons under a finished battle."""
+    q = update.callback_query
+    try:
+        action, a, b = q.data.split(":")
+        a, b = int(a), int(b)
+    except ValueError:
+        await q.answer()
+        return
+    inline_id = q.inline_message_id
+    if not inline_id:
+        await q.answer()
+        return
+    if on_cooldown(q.from_user.id, 3.0):
+        await q.answer("Slow down a sec.", show_alert=True)
+        return
+    remember(q.from_user)
+    await q.answer()
+    try:
+        if action == "lb":
+            cached("top", 30, lambda: make_leaderboard(leaderboard_rows("global")).getvalue())
+            url, kb = f"{BASE_URL}/top.jpg?t={int(time.time())}", board_kb(a, b)
+        else:
+            hit = _CACHE.get(f"pair:{a}:{b}")
+            if action == "bk" and hit and hit[0] > time.time():
+                url = hit[1]
+            else:  # refresh (or expired back) -> rebuild with fresh profile data
+                ua, ub = await get_user(context.bot, a), await get_user(context.bot, b)
+                if ua is None or ub is None:
+                    await q.answer("Expired - start a new challenge.", show_alert=True)
+                    return
+                url = await battle_url(context.bot, ua, ub, record=False)
+            kb = battle_kb(a, b)
+        await context.bot.edit_message_media(
+            inline_message_id=inline_id, media=InputMediaPhoto(media=url), reply_markup=kb
+        )
+    except TelegramError as e:
+        log.info("nav edit skipped: %s", e)
+    except Exception:
+        log.exception("nav failed")
+
+
 async def on_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        f"I work inline. In any chat type @{context.bot.username} and pick a result."
+        f"I work inline. In any chat type @{context.bot.username} and send the challenge."
     )
 
 
@@ -1118,7 +1212,7 @@ async def post_init(app):
     global LOOP, BOT
     LOOP, BOT = asyncio.get_running_loop(), app.bot
     try:
-        await app.bot.delete_my_commands()  # no commands needed any more
+        await app.bot.delete_my_commands()  # inline only - no commands
     except Exception as e:
         log.warning("delete_my_commands failed: %s", e)
 
@@ -1133,11 +1227,13 @@ def main():
 
     load_records()
     threading.Thread(target=run_web, name="web", daemon=True).start()
+    threading.Thread(target=prewarm, name="prewarm", daemon=True).start()
     log.info("health + image server on port %s (public: %s)", PORT, BASE_URL or "unset")
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(InlineQueryHandler(on_inline))
     app.add_handler(CallbackQueryHandler(cb_accept, pattern=r"^acc:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_nav, pattern=r"^(lb|rf|bk):\d+:\d+$"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.VIA_BOT, on_private))
     app.add_error_handler(on_error)
 
