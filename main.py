@@ -222,26 +222,45 @@ def cost_lines(name, frag, is_word):
     return f"EST ~{fmt_ton(est)} TON", word_txt + (" | NOT ON FRAGMENT" if frag else "")
 
 
-STAT_LABELS = ["Length", "Real word", "Digits", "Underscores", "Fragment", "Premium", "Avatar"]
+STAT_LABELS = ["Avatar", "Username", "Real word", "Clean", "Collectible", "Rarity", "Account age",
+               "Premium"]
 
 
-def stat_facts(name, frag, is_word, premium, has_pic):
+def account_age(uid):
+    """Rough join year from the Telegram user id (lower id = older account)."""
+    for lim, year, score in ((1e8, "2015-", 10), (5e8, "~2017", 9), (1e9, "~2019", 8), (2e9, "~2020", 7),
+                             (5e9, "~2021", 6), (6e9, "~2022", 5), (7e9, "~2023", 4), (8e9, "~2024", 3)):
+        if uid < lim:
+            return year, score
+    return "2025+", 2
+
+
+def stat_facts(uid, name, frag, is_word, premium, has_pic, rating, tier):
     """List of (value text, score 0-10) in the same order as STAT_LABELS."""
+    age = account_age(uid)
+    prem = ("Yes" if premium else "No", 6 if premium else 2)
+    ava = ("Yes" if has_pic else "None", 7 if has_pic else 2)
     if not name:
-        return [("-", 0)] * 5 + [("Yes" if premium else "No", 5 if premium else 2),
-                                 ("Yes" if has_pic else "None", 7 if has_pic else 2)]
+        return [ava, ("-", 0), ("-", 0), ("-", 0), ("-", 0), ("NONE", 0), age, prem]
     n = len(name)
     digits = sum(ch.isdigit() for ch in name)
     unders = name.count("_")
     ton = (frag or {}).get("ton")
+    clean = max(0.5, 10 - digits * 3 - unders * 4)
+    if digits or unders:
+        clean_txt = f"{digits}d {unders}_"
+    else:
+        clean_txt = "Perfect"
+    coll = (f"{fmt_ton(ton)} TON", min(10, math.log10(ton + 1) * 2.5)) if ton else ("None", 0)
     return [
+        ava,
         (f"{n} letters", {4: 10, 5: 9, 6: 7, 7: 5, 8: 4}.get(n, 2 if n <= 12 else 1)),
         ("Yes" if is_word else "No", 9 if is_word else 2),
-        (str(digits), max(0.5, 10 - digits * 3)),
-        (str(unders), max(0.5, 10 - unders * 4)),
-        ((f"{fmt_ton(ton)} TON", min(10, math.log10(ton + 1) * 2.5)) if ton else ("-", 0)),
-        ("Yes" if premium else "No", 5 if premium else 2),
-        ("Yes" if has_pic else "None", 7 if has_pic else 2),
+        (clean_txt, clean),
+        coll,
+        (tier.replace(" @", ""), rating / 10),
+        age,
+        prem,
     ]
 
 
@@ -249,7 +268,7 @@ def stat_facts(name, frag, is_word, premium, has_pic):
 # IMAGES (simple + fast)
 # ======================================================================
 W, H = 960, 540          # banner + leaderboard
-BW, BH = 800, 1000       # battle card (portrait, like a profile battle)
+BW, BH = 800, 1040       # battle card (portrait, like a profile battle)
 GOLD = (255, 200, 40)
 CYAN = (0, 210, 255)
 PINK = (255, 60, 180)
@@ -469,7 +488,7 @@ def make_battle_image(a, b, winner_is_a):
 
     stats_table(img, a, b, winner_is_a)
     d = ImageDraw.Draw(img)
-    d.text((400, 968), "refresh to re-check your @ on Fragment", font=font(14), fill=(80, 84, 98),
+    d.text((400, 1012), "refresh to re-check your @ on Fragment", font=font(14), fill=(80, 84, 98),
            anchor="mm")
     return jpeg(img)
 
@@ -499,6 +518,16 @@ def make_leaderboard(rows):
 
 
 def make_challenge_banner():
+    """Uses banner.png (next to this file) for inline mode; falls back to a generated banner."""
+    for name in ("banner.png", "banner.jpg", "banner.jpeg", "banner.webp"):
+        path = BASE_DIR / name
+        if path.exists():
+            try:
+                im = Image.open(path).convert("RGB")
+                im.thumbnail((1280, 1280), Image.LANCZOS)
+                return jpeg(im)
+            except Exception:
+                log.exception("could not load %s", name)
     img = background()
     d = ImageDraw.Draw(img)
     d.text((W // 2, 190), "TELEMAXXING", font=font(110), fill=GREEN, anchor="mm", stroke_width=3,
@@ -538,7 +567,8 @@ def static_img(kind):
             STATIC[kind] = make_challenge_banner()
         elif kind == "banner_thumb":
             im = Image.open(io.BytesIO(static_img("banner")))
-            STATIC[kind] = jpeg(im.resize((320, 180), Image.LANCZOS))
+            im.thumbnail((320, 320), Image.LANCZOS)
+            STATIC[kind] = jpeg(im)
     return STATIC[kind]
 
 
@@ -730,7 +760,7 @@ async def build_profile(bot, user, fresh=False):
         "sub": sub,
         "ton": (frag or {}).get("ton") or 0,
         "pfp": pic,
-        "facts": stat_facts(uname, frag, word, premium, pic is not None),
+        "facts": stat_facts(user.id, uname, frag, word, premium, pic is not None, rating, tier),
     }
     PROFILES[user.id] = (time.time() + 600, prof)
     if len(PROFILES) > 500:
@@ -800,12 +830,13 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # start warming this user's @ so the battle is instant
     asyncio.create_task(build_profile(context.bot, user))
     t = int(time.time() // 60)
+    bw, bh = Image.open(io.BytesIO(static_img("banner"))).size
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("ACCEPT CHALLENGE", callback_data=f"acc:{user.id}")]])
     result = InlineQueryResultPhoto(
         id=f"ch{user.id}_{t}",
         photo_url=f"{BASE_URL}/banner/{user.id}.jpg?t={t}",
-        thumbnail_url=f"{BASE_URL}/thumb/banner.jpg?v=4",
-        photo_width=W, photo_height=H,
+        thumbnail_url=f"{BASE_URL}/thumb/banner.jpg?v=5",
+        photo_width=bw, photo_height=bh,
         title="Challenge: whose @ is better?",
         description="First person to accept fights you",
         reply_markup=kb,
