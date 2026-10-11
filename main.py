@@ -7,7 +7,8 @@ Battle = whose @username is better.
   * shows a score out of 10, a tier, and a side-by-side stats table
 
 Env vars: BOT_TOKEN (required), PORT + RENDER_EXTERNAL_URL (Render sets both),
-          PUBLIC_URL (custom domain only), FONT_PATH (optional)
+          PUBLIC_URL (custom domain only), FONT_PATH (optional),
+          USE_POLLING=1 (optional, force polling instead of webhooks)
 requirements.txt:
     python-telegram-bot==21.6
     Flask==3.1.3
@@ -28,7 +29,7 @@ import threading
 import time
 
 import httpx
-from flask import Flask, Response, abort, jsonify
+from flask import Flask, Response, abort, jsonify, request
 from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 from telegram import (
@@ -56,6 +57,7 @@ log = logging.getLogger("usermaxxing")
 
 TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 PORT = int(os.environ.get("PORT", "10000"))
+WEBHOOK_SECRET = hashlib.sha256(("usermaxxing:" + TOKEN).encode()).hexdigest()[:40]
 
 
 def _clean_url(u):
@@ -715,6 +717,7 @@ def make_challenge_banner():
 # ======================================================================
 # WEB (serves images to Telegram)
 # ======================================================================
+TG = {"app": None, "loop": None}   # filled in when webhook mode is running
 web = Flask(__name__)
 _CACHE = {}
 STATIC = {}
@@ -766,7 +769,27 @@ def healthz():
 
 @web.get("/status")
 def status():
-    return f"base_url={BASE_URL or 'UNSET'}"
+    return f"base_url={BASE_URL or 'UNSET'} mode={'webhook' if TG['app'] else 'polling/starting'}"
+
+
+@web.post("/tg/<secret>")
+def tg_webhook(secret):
+    """Telegram calls this for every update. An incoming call also wakes a sleeping free-tier host."""
+    if secret != WEBHOOK_SECRET:
+        abort(403)
+    app, loop = TG["app"], TG["loop"]
+    if app is None or loop is None:
+        return "starting", 503          # Telegram retries later
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        abort(400)
+    try:
+        upd = Update.de_json(data, app.bot)
+        asyncio.run_coroutine_threadsafe(app.update_queue.put(upd), loop)
+    except Exception:
+        log.exception("bad webhook update")
+        abort(400)
+    return "ok"
 
 
 @web.get("/fragtest/<name>")
@@ -1125,6 +1148,50 @@ async def post_init(app):
         log.warning("delete_my_commands failed: %s", e)
 
 
+def keepalive():
+    """Pings our own public URL so free hosts (Render) do not put the bot to sleep."""
+    if not BASE_URL:
+        return
+    time.sleep(30)
+    while True:
+        try:
+            httpx.get(f"{BASE_URL}/healthz", timeout=15, follow_redirects=True)
+        except Exception as e:
+            log.info("keepalive ping failed: %s", e)
+        time.sleep(240)
+
+
+def build_app(webhook=False):
+    builder = Application.builder().token(TOKEN).post_init(post_init).concurrent_updates(True)
+    if webhook:
+        builder = builder.updater(None)     # updates arrive through the Flask route instead
+    app = builder.build()
+    app.add_handler(InlineQueryHandler(on_inline))
+    app.add_handler(CallbackQueryHandler(cb_accept, pattern=r"^acc:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_nav, pattern=r"^(lb|rf|bk):\d+:\d+$"))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.VIA_BOT, on_private))
+    app.add_error_handler(on_error)
+    return app
+
+
+async def _webhook_main():
+    app = build_app(webhook=True)
+    await app.initialize()
+    await app.start()
+    await app.bot.set_webhook(url=f"{BASE_URL}/tg/{WEBHOOK_SECRET}", allowed_updates=Update.ALL_TYPES,
+                              drop_pending_updates=False, max_connections=40)
+    TG["app"] = app
+    log.info("webhook mode on: %s/tg/<secret>", BASE_URL)
+    await asyncio.Event().wait()
+
+
+def run_webhook_mode():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    TG["loop"] = loop
+    loop.run_until_complete(_webhook_main())
+
+
 def main():
     if not TOKEN:
         log.error("BOT_TOKEN is not set.")
@@ -1136,14 +1203,27 @@ def main():
     threading.Thread(target=prewarm, name="prewarm", daemon=True).start()
     log.info("server on port %s (public: %s)", PORT, BASE_URL or "UNSET")
 
-    app = Application.builder().token(TOKEN).post_init(post_init).concurrent_updates(True).build()
-    app.add_handler(InlineQueryHandler(on_inline))
-    app.add_handler(CallbackQueryHandler(cb_accept, pattern=r"^acc:\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_nav, pattern=r"^(lb|rf|bk):\d+:\d+$"))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.VIA_BOT, on_private))
-    app.add_error_handler(on_error)
+    threading.Thread(target=keepalive, name="keepalive", daemon=True).start()
+    if BASE_URL and not os.environ.get("USE_POLLING"):
+        try:
+            run_webhook_mode()          # blocks forever; Telegram -> /tg/<secret> -> bot
+            return
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            log.exception("webhook mode failed - falling back to polling")
+            TG["app"] = None
     log.info("starting polling")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    while True:   # if polling ever crashes, rebuild the bot and try again instead of dying
+        try:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+            build_app().run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+            break
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            log.exception("polling crashed - restarting in 5s")
+            time.sleep(5)
 
 
 # ======================================================================
